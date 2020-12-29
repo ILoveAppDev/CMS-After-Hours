@@ -5,7 +5,7 @@
 --  DDL for Package Body AF_ASSIGNMENT_PCK
 --------------------------------------------------------
 
-  CREATE OR REPLACE PACKAGE BODY "CMS"."AF_ASSIGNMENT_PCK" AS
+  CREATE OR REPLACE EDITIONABLE PACKAGE BODY "CMS"."AF_ASSIGNMENT_PCK" AS
     PROCEDURE oro(P_ADDBY varchar2, P_ADDDTTM date, P_MODBY varchar2, P_MODDTTM date, P_ORO_NAME varchar2, P_EFFECTIVE_DATE date) IS
         i NUMBER :=0;
         j NUMBER :=0;
@@ -158,9 +158,19 @@
         v_tmp4               varchar2(100);
 
         v_new_hist_timestamp timestamp;
+        
+         -- added on Dec 21, 2020
+    v_af_sche_job_pack_var     varchar2(4000) := null;
 
 
     begin
+
+            -- Added on Dec 21, 2020
+             -- get predefined variable from app control table
+             v_af_sche_job_pack_var     := DEF_SECURITY_ADMIN.get_app_param_value(
+                                            p_param_name => 'af_schedule_job_package_selection'
+                                        );
+
 
             if p_specific_datetime is not null 
                and
@@ -186,10 +196,29 @@
 
                 begin
 
-                    dbms_job.remove(
-                            job  => rec.job_num                   
-                        ); 
+                    if v_af_sche_job_pack_var = '1' then
+                    
+                        dbms_job.remove(
+                                job  => rec.job_num                   
+                            ); 
 
+                    else
+                
+                        -- added on Dec 21, 2020
+                        begin   
+                            DBMS_SCHEDULER.DROP_JOB (
+                               job_name => 'af_job_unit_code_' || p_on_call_id,
+                               force    => true
+                            );
+                        
+                        exception
+                            when others then
+                               null;
+                        
+                        end;
+                    
+                    end if;
+                    
                     update af_oncall_hist
                         set job_status = 'removed'
                     where on_call_id_new = p_on_call_id and transaction_timestamp = rec.transaction_timestamp;
@@ -374,7 +403,7 @@
         -- Modified on Dec. 06, 2018
         -- 
         v_default_sender  := 'cms@toronto.ca';
-
+    
         send_useremail(
             p_sender       => v_default_sender,
             p_recipients   => v_receivers,
@@ -387,7 +416,7 @@
 
         if  p_on_call_id=9 and p_pass_effective_time='IM' then
             oro(v('APP_USER'), sysdate, v('APP_USER'), sysdate, P_PASS_ONTO,V_PASSON_DATETIME);
-            --oro('wu sun', sysdate, 'wusun', sysdate,   'wusun test', sysdate);
+            --oro('lsitu', sysdate, 'lsitu', sysdate,   'lsitu test', sysdate);
         end if;
 
         -- Finally, schedule a job for next auto-notification
@@ -449,20 +478,42 @@
 
                 else
 
-                    dbms_job.submit(
-                            job         => v_job_num,
-                            --what        => 'begin CMS.AF_ASSIGNMENT_PCK.EMAIL_FOR_NEXT_AVAI_ASSIGNMENT(' || p_on_call_id || ', COALESCE(v(''APP_USER''), user) ); end;', 
-                            what        => 'begin CMS.AF_ASSIGNMENT_PCK.EMAIL_FOR_NEXT_AVAI_ASSIGNMENT(' || p_on_call_id || ',''' || COALESCE(v('APP_USER'), user) || '''); end;', 
+                    if v_af_sche_job_pack_var = '1' then
+                    
+                        dbms_job.submit(
+                                job         => v_job_num,
+                                --what        => 'begin CMS.AF_ASSIGNMENT_PCK.EMAIL_FOR_NEXT_AVAI_ASSIGNMENT(' || p_on_call_id || ', COALESCE(v(''APP_USER''), user) ); end;', 
+                                what        => 'begin CMS.AF_ASSIGNMENT_PCK.EMAIL_FOR_NEXT_AVAI_ASSIGNMENT(' || p_on_call_id || ',''' || COALESCE(v('APP_USER'), user) || '''); end;', 
+    
+                                next_date   => to_date( v_passon_datetime, 'dd-MON-yyyy HH24:MI' ) - to_number( v_af_schjob_tctr_var ), 
+                             --   next_date   => sysdate+2/24/60, 
+                                interval    => 'null'
+                           --     no_parse    => false,
+                           --     instance    => ANY_INSTANCE,
+                           --     force       => true
+                            );  
 
-                            next_date   => to_date( v_passon_datetime, 'dd-MON-yyyy HH24:MI' ) - to_number( v_af_schjob_tctr_var ), 
-                         --   next_date   => sysdate+2/24/60, 
-                            interval    => 'null'
-                       --     no_parse    => false,
-                       --     instance    => ANY_INSTANCE,
-                       --     force       => true
-                        );  
 
-
+                    else
+                    
+                        -- added on DEc 21, 2020
+                        
+                        v_job_num := p_on_call_id;
+                        
+                        DBMS_SCHEDULER.CREATE_JOB(
+                           job_name          =>  'af_job_unit_code_' || p_on_call_id,
+                           job_type          =>  'PLSQL_BLOCK',
+                           job_action        =>  'begin CMS.AF_ASSIGNMENT_PCK.EMAIL_FOR_NEXT_AVAI_ASSIGNMENT(' || p_on_call_id || ',''' || COALESCE(v('APP_USER'), user) || '''); end;', 
+                           start_date        =>  to_date( v_passon_datetime, 'dd-MON-yyyy HH24:MI' ) - to_number( v_af_schjob_tctr_var ), 
+                           repeat_interval   =>  null,
+                           enabled           =>  TRUE
+                    
+                           
+                        );
+                    
+                    
+                    end if;
+                    
                     -- Need to save the job number into history table for future reference
                     update CMS.AF_ONCALL_HIST
                         set job_num = v_job_num,
@@ -970,6 +1021,7 @@
                                             p_param_name => 'af_test_mode'
                                         );
 
+
             v_test_user_email     := DEF_SECURITY_ADMIN.get_app_param_value(
                                             p_param_name => 'af_test_user_email'
                                         );
@@ -977,6 +1029,9 @@
             v_email_func_disable := DEF_SECURITY_ADMIN.get_app_param_value(
                                             p_param_name => 'af_email_func_disable'
                                         );
+        
+        
+
 
         exception
             when others then
@@ -985,6 +1040,8 @@
                 v_email_func_disable := PCK_EMAIL_FUNC_DISABLE;
 
         end;
+        
+        
 
         if upper( v_test_mode ) = 'Y' then
 
@@ -1009,8 +1066,11 @@
             real_cc      := null;
             real_bcc     := null;
             real_replyto := v_test_user_email;
-
+            
+             
         end if;
+        
+  --      
 
         if upper( v_email_func_disable ) = 'N' then
 
@@ -1029,8 +1089,11 @@
 
                     );
                 APEX_MAIL.PUSH_QUEUE;
+                
+                
+                
             else
-
+           
                 APEX_MAIL.SEND(
 
                     p_to                        => real_to,
@@ -1045,6 +1108,9 @@
                     );
 
             APEX_MAIL.PUSH_QUEUE;
+            
+           
+            
             end if;
 
         end if;
@@ -1367,10 +1433,10 @@
         c := utl_smtp.open_connection('mail.toronto.ca', 25); -- SMTP on port 25 
         utl_smtp.helo(c, 'mail.toronto.ca');
         utl_smtp.mail(c, 'cms@toronto.ca');
-        utl_smtp.rcpt(c, 'xli5@toronto.ca');
+        utl_smtp.rcpt(c, 'lsitu@toronto.ca');
 
         utl_smtp.data(c,'From: cms@toronto.ca' || utl_tcp.crlf ||
-        'To: xli5@toronto.ca' || utl_tcp.crlf ||
+        'To: lsitu@toronto.ca' || utl_tcp.crlf ||
         'Subject: debug info from scheduled job' || utl_tcp.crlf ||
         'calling ret_future_oncall_info() ,  CURRENT_DATE -> ' || CURRENT_DATE || utl_tcp.crlf || 
         'calling ret_future_oncall_info() ,  sysdate -> ' || sysdate 
@@ -1388,10 +1454,10 @@
         c := utl_smtp.open_connection('mail.toronto.ca', 25); -- SMTP on port 25 
         utl_smtp.helo(c, 'mail.toronto.ca');
         utl_smtp.mail(c, 'cms@toronto.ca');
-        utl_smtp.rcpt(c, 'xli5@toronto.ca');
+        utl_smtp.rcpt(c, 'lsitu@toronto.ca');
 
         utl_smtp.data(c,'From: cms@toronto.ca' || utl_tcp.crlf ||
-        'To: xli5@toronto.ca' || utl_tcp.crlf ||
+        'To: lsitu@toronto.ca' || utl_tcp.crlf ||
         'Subject: debug info from scheduled job' || utl_tcp.crlf ||
         'calling ret_future_oncall_info() ,  v_pass_effective_time -> ' || v_pass_effective_time || utl_tcp.crlf || 
         'calling ret_future_oncall_info() ,  v_diff -> ' || v_diff || utl_tcp.crlf ||
@@ -1421,10 +1487,10 @@
             c := utl_smtp.open_connection('mail.toronto.ca', 25); -- SMTP on port 25 
             utl_smtp.helo(c, 'mail.toronto.ca');
             utl_smtp.mail(c, 'cms@toronto.ca');
-            utl_smtp.rcpt(c, 'xli5@toronto.ca');
+            utl_smtp.rcpt(c, 'lsitu@toronto.ca');
 
             utl_smtp.data(c,'From: cms@toronto.ca' || utl_tcp.crlf ||
-            'To: xli5@toronto.ca' || utl_tcp.crlf ||
+            'To: lsitu@toronto.ca' || utl_tcp.crlf ||
            'Subject: error from scheduled job' || utl_tcp.crlf ||
             'ret_future_oncall_info() Error -> ' || SQLCODE || ' - ' || SQLERRM );
             utl_smtp.quit(c);
@@ -1520,7 +1586,7 @@
                    pass_effective_time
             from af_oncall_info  
             where active = 'A'
-            and unit_group in 
+            /*and unit_group in 
             (
                select unit_group from af_oncall_info 
                where ( 
@@ -1528,7 +1594,7 @@
                        or
                        p_specific_oncall_id is not null and p_specific_oncall_id = on_call_id
                 )
-            )
+            )*/
 
         ) loop
 
@@ -1623,10 +1689,10 @@
         c := utl_smtp.open_connection('mail.toronto.ca', 25); -- SMTP on port 25 
         utl_smtp.helo(c, 'mail.toronto.ca');
         utl_smtp.mail(c, 'cms@toronto.ca');
-        utl_smtp.rcpt(c, 'xli5@toronto.ca');
+        utl_smtp.rcpt(c, 'lsitu@toronto.ca');
     
         utl_smtp.data(c,'From: cms@toronto.ca' || utl_tcp.crlf ||
-        'To: xli5@toronto.ca' || utl_tcp.crlf ||
+        'To: lsitu@toronto.ca' || utl_tcp.crlf ||
         'Subject: debug info from scheduled job' || utl_tcp.crlf ||
         'p_specific_oncall_id -> ' || p_specific_oncall_id || utl_tcp.crlf ||
         'p_specific_trans_username -> ' || p_specific_trans_username || utl_tcp.crlf 
@@ -1661,10 +1727,10 @@
             c := utl_smtp.open_connection('mail.toronto.ca', 25); -- SMTP on port 25 
             utl_smtp.helo(c, 'mail.toronto.ca');
             utl_smtp.mail(c, 'cms@toronto.ca');
-            utl_smtp.rcpt(c, 'xli5@toronto.ca');
+            utl_smtp.rcpt(c, 'lsitu@toronto.ca');
         
             utl_smtp.data(c,'From: cms@toronto.ca' || utl_tcp.crlf ||
-            'To: xli5@toronto.ca' || utl_tcp.crlf ||
+            'To: lsitu@toronto.ca' || utl_tcp.crlf ||
             'Subject: debug info from scheduled job' || utl_tcp.crlf ||
             'v_return -> ' || v_return || utl_tcp.crlf ||
             'on_call_id -> ' || rec.on_call_id || utl_tcp.crlf 
@@ -1680,10 +1746,10 @@
                 c := utl_smtp.open_connection('mail.toronto.ca', 25); -- SMTP on port 25 
                 utl_smtp.helo(c, 'mail.toronto.ca');
                 utl_smtp.mail(c, 'cms@toronto.ca');
-                utl_smtp.rcpt(c, 'xli5@toronto.ca');
+                utl_smtp.rcpt(c, 'lsitu@toronto.ca');
             
                 utl_smtp.data(c,'From: cms@toronto.ca' || utl_tcp.crlf ||
-                'To: xli5@toronto.ca' || utl_tcp.crlf ||
+                'To: lsitu@toronto.ca' || utl_tcp.crlf ||
                 'Subject: debug info from scheduled job' || utl_tcp.crlf ||
                 'future on-duty assignment is found, continue ! ' 
                 
@@ -1751,10 +1817,10 @@
                             c := utl_smtp.open_connection('mail.toronto.ca', 25); -- SMTP on port 25 
                             utl_smtp.helo(c, 'mail.toronto.ca');
                             utl_smtp.mail(c, 'cms@toronto.ca');
-                            utl_smtp.rcpt(c, 'xli5@toronto.ca');
+                            utl_smtp.rcpt(c, 'lsitu@toronto.ca');
                         
                             utl_smtp.data(c,'From: cms@toronto.ca' || utl_tcp.crlf ||
-                            'To: xli5@toronto.ca' || utl_tcp.crlf ||
+                            'To: lsitu@toronto.ca' || utl_tcp.crlf ||
                             'Subject: error from scheduled job' || utl_tcp.crlf ||
                             'Error -> ' || SQLCODE || ' - ' || SQLERRM );
                             utl_smtp.quit(c);
@@ -1769,10 +1835,10 @@
                 c := utl_smtp.open_connection('mail.toronto.ca', 25); -- SMTP on port 25 
                 utl_smtp.helo(c, 'mail.toronto.ca');
                 utl_smtp.mail(c, 'cms@toronto.ca');
-                utl_smtp.rcpt(c, 'xli5@toronto.ca');
+                utl_smtp.rcpt(c, 'lsitu@toronto.ca');
             
                 utl_smtp.data(c,'From: cms@toronto.ca' || utl_tcp.crlf ||
-                'To: xli5@toronto.ca' || utl_tcp.crlf ||
+                'To: lsitu@toronto.ca' || utl_tcp.crlf ||
                 'Subject: debug info from scheduled job' || utl_tcp.crlf ||
                 'v_next_assignee_prev -> ' || v_next_assignee_prev || utl_tcp.crlf ||
                 'v_next_assignee -> ' || v_next_assignee || utl_tcp.crlf ||
@@ -1818,17 +1884,17 @@
                       
         end loop;
         
-      --  v_next_assignee_prev :='Wu Sun';
+      --  v_next_assignee_prev :='Lisa Situ';
       
        -- This is for debugging
        /*
         c := utl_smtp.open_connection('mail.toronto.ca', 25); -- SMTP on port 25 
         utl_smtp.helo(c, 'mail.toronto.ca');
         utl_smtp.mail(c, 'cms@toronto.ca');
-        utl_smtp.rcpt(c, 'xli5@toronto.ca');
+        utl_smtp.rcpt(c, 'lsitu@toronto.ca');
     
         utl_smtp.data(c,'From: cms@toronto.ca' || utl_tcp.crlf ||
-        'To: xli5@toronto.ca' || utl_tcp.crlf ||
+        'To: lsitu@toronto.ca' || utl_tcp.crlf ||
         'Subject: debug info from scheduled job' || utl_tcp.crlf ||
         'v_next_assignee_prev -> ' || v_next_assignee_prev );
         utl_smtp.quit(c);
@@ -1854,7 +1920,7 @@
             v_next_assignee_email := ret_oncall_pass_onto_info( v_next_oncall_id_prev, 'email', true );
             v_pass_onto_to_be_replaced := ret_oncall_pass_onto_info( v_next_oncall_id_prev, 'fullname', false );
             
-         --   v_default_sender := 'xli5@toronto.ca';
+         --   v_default_sender := 'lsitu@toronto.ca';
             DBMS_OUTPUT.PUT_LINE('v_next_transaction_by_prev = ' || v_next_transaction_by_prev);
             
             begin
@@ -1887,9 +1953,9 @@
                             || 'This is an automated email.  Please do not reply to this message.' || CRLF || CRLF
                             || 'Thank you.' || CRLF || CRLF
                          --   || 'CMS Afterhours' || CRLF || CRLF
-                            || 'CMS Afterhours' || getDBServerName() || CRLF || CRLF
+                            || 'CMS Afterhours' --|| getDBServerName() || CRLF || CRLF
                             -- Can comment this out if necessary
-                            || output_all_assgn_in_text_tbl
+                            --|| output_all_assgn_in_text_tbl
                             ;
                             
              DBMS_OUTPUT.PUT_LINE('v_receivers = ' || v_receivers);
@@ -1905,7 +1971,7 @@
                 tmp_create_apex_session(
                     p_app_id      => 150,
                     p_app_user    => 'cms',
-              --      p_app_user    => 'xli5',
+              --      p_app_user    => 'lsitu',
                     p_app_page_id => 1
                 );
                         
@@ -1950,7 +2016,7 @@
             send_useremail(
                 p_sender       => v_default_sender,
                 p_recipients   => v_receivers,
-                p_cc           => v_cc|| ',' ||'cms@toronto.ca,lsitu@toronto.ca',
+                p_cc           => v_cc|| ',' ||'cms@toronto.ca', --lsitu@toronto.ca',
                 p_replyto      => v_default_sender,
                 p_subject      => v_emailsubject,
                 p_message      => v_emailbody,
@@ -1966,10 +2032,10 @@
         c := utl_smtp.open_connection('mail.toronto.ca', 25); -- SMTP on port 25 
         utl_smtp.helo(c, 'mail.toronto.ca');
         utl_smtp.mail(c, 'cms@toronto.ca');
-        utl_smtp.rcpt(c, 'xli5@toronto.ca');
+        utl_smtp.rcpt(c, 'lsitu@toronto.ca');
     
         utl_smtp.data(c,'From: cms@toronto.ca' || utl_tcp.crlf ||
-        'To: xli5@toronto.ca' || utl_tcp.crlf ||
+        'To: lsitu@toronto.ca' || utl_tcp.crlf ||
         'Subject: message from scheduled job' || utl_tcp.crlf ||
         'Job Completes -> ' || SQLCODE || ' - ' || SQLERRM );
         utl_smtp.quit(c);
